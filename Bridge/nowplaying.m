@@ -21,8 +21,10 @@ void loftie_now_playing(void *perl, void *cv) {
         const char *cmd = getenv("LOFTIE_CMD");
         if (cmd) {
             SendFn send = (SendFn)dlsym(mr, "MRMediaRemoteSendCommand");
-            if (send) send((unsigned int)atoi(cmd), NULL);
-            printf("{\"sent\":true}\n");
+            Boolean ok = send ? send((unsigned int)atoi(cmd), NULL) : false;
+            // Команда уходит асинхронно: не завершаемся, пока macOS её не доставит
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.5, false);
+            printf("{\"sent\":%s}\n", ok ? "true" : "false");
             fflush(stdout);
             return;
         }
