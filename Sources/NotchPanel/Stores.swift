@@ -1,0 +1,407 @@
+import AppKit
+import EventKit
+
+// MARK: - Папка данных
+
+enum AppPaths {
+    /// ~/Library/Application Support/Loftie; при первом запуске 1.0 забирает данные из старой папки Chelka
+    static let support: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent("Loftie", isDirectory: true)
+        let legacy = base.appendingPathComponent("Chelka", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: dir.path), FileManager.default.fileExists(atPath: legacy.path) {
+            try? FileManager.default.moveItem(at: legacy, to: dir)
+        }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+}
+
+// MARK: - Избранное
+
+enum FavKind: String, Codable, CaseIterable, Identifiable {
+    /// clipboard — не избранное, а вкладка с историей буфера обмена
+    case account, link, file, clipboard
+    var id: String { rawValue }
+
+    // Раньше была отдельная вкладка «Таблицы»: такие закладки теперь просто ссылки
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = raw == "sheet" ? .link : (FavKind(rawValue: raw) ?? .link)
+    }
+
+    var title: String {
+        switch self {
+        case .account: "Аккаунты"
+        case .link: "Ссылки"
+        case .file: "Файлы"
+        case .clipboard: "Буфер"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .account: "person.crop.circle"
+        case .link: "globe"
+        case .file: "doc"
+        case .clipboard: "doc.on.clipboard"
+        }
+    }
+
+    var valuePrompt: String {
+        switch self {
+        case .account: "Логин или почта"
+        case .link: "Ссылка"
+        case .file: "Путь"
+        case .clipboard: "Текст"
+        }
+    }
+}
+
+struct Favorite: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var kind: FavKind
+    var title: String
+    var value: String
+
+    var expandedPath: String { (value as NSString).expandingTildeInPath }
+}
+
+/// Список избранного в ~/Library/Application Support/Loftie/favorites.json.
+final class FavoritesStore: ObservableObject {
+    @Published private(set) var items: [Favorite] = []
+
+    private let url = AppPaths.support.appendingPathComponent("favorites.json")
+
+    init() {
+        if let data = try? Data(contentsOf: url), let saved = try? JSONDecoder().decode([Favorite].self, from: data) {
+            items = saved
+        } else {
+            items = Self.placeholders
+            save()
+        }
+    }
+
+    func items(of kind: FavKind) -> [Favorite] { items.filter { $0.kind == kind } }
+
+    func upsert(_ favorite: Favorite) {
+        if let index = items.firstIndex(where: { $0.id == favorite.id }) {
+            items[index] = favorite
+        } else {
+            items.append(favorite)
+        }
+        save()
+    }
+
+    func remove(_ favorite: Favorite) {
+        items.removeAll { $0.id == favorite.id }
+        save()
+    }
+
+    /// Аккаунт копируется, всё остальное открывается.
+    func open(_ favorite: Favorite) {
+        switch favorite.kind {
+        case .account:
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(favorite.value, forType: .string)
+        case .link:
+            let text = favorite.value.contains("://") ? favorite.value : "https://" + favorite.value
+            if let link = URL(string: text) { NSWorkspace.shared.open(link) }
+        case .file:
+            NSWorkspace.shared.open(URL(fileURLWithPath: favorite.expandedPath))
+        case .clipboard:
+            break
+        }
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(items) { try? data.write(to: url, options: .atomic) }
+    }
+
+    /// Пара примеров на первый запуск, остальное человек добавит сам
+    private static var placeholders: [Favorite] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return [
+            Favorite(kind: .link, title: "Loftie на GitHub", value: "https://github.com/onkhas1/loftie"),
+            Favorite(kind: .file, title: "Загрузки", value: home + "/Downloads"),
+            Favorite(kind: .file, title: "Программы", value: "/Applications"),
+        ]
+    }
+}
+
+// MARK: - Буфер обмена
+
+/// Последние скопированные тексты, чтобы не потерять нужное.
+/// Пароли из менеджеров паролей не сохраняются: они помечают буфер как скрытый.
+final class ClipboardHistory: ObservableObject {
+    struct Item: Identifiable, Codable, Equatable {
+        var id = UUID()
+        var text: String
+        var date: Date
+    }
+
+    @Published private(set) var items: [Item] = []
+
+    let limit = 5
+    private var changeCount = NSPasteboard.general.changeCount
+    private var timer: Timer?
+    private let skipTypes: Set<String> = ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType",
+                                          "org.nspasteboard.AutoGeneratedType", "com.agilebits.onepassword"]
+    private let url = AppPaths.support.appendingPathComponent("clipboard.json")
+
+    init() {
+        if let data = try? Data(contentsOf: url), let saved = try? JSONDecoder().decode([Item].self, from: data) {
+            items = saved
+        }
+        timer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in self?.check() }
+    }
+
+    private func check() {
+        let board = NSPasteboard.general
+        guard board.changeCount != changeCount else { return }
+        changeCount = board.changeCount
+        let types = Set((board.types ?? []).map(\.rawValue))
+        guard types.isDisjoint(with: skipTypes), let string = board.string(forType: .string),
+              !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        add(String(string.prefix(5000)))
+    }
+
+    private func add(_ text: String) {
+        items.removeAll { $0.text == text }
+        items.insert(Item(text: text, date: Date()), at: 0)
+        if items.count > limit { items.removeLast(items.count - limit) }
+        save()
+    }
+
+    /// Вернуть запись в буфер; она поднимается наверх списка
+    func copy(_ item: Item) {
+        let board = NSPasteboard.general
+        board.clearContents()
+        board.setString(item.text, forType: .string)
+        changeCount = board.changeCount
+        add(item.text)
+    }
+
+    func remove(_ item: Item) {
+        items.removeAll { $0.id == item.id }
+        save()
+    }
+
+    func clear() {
+        items = []
+        save()
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(items) { try? data.write(to: url, options: .atomic) }
+    }
+}
+
+// MARK: - Obsidian
+
+/// Хранилища Obsidian из его собственного списка (~/Library/Application Support/obsidian/obsidian.json).
+enum Obsidian {
+    struct Vault: Identifiable, Equatable {
+        let name: String
+        let path: String
+        var id: String { path }
+    }
+
+    static var isInstalled: Bool {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: "md.obsidian") != nil
+    }
+
+    /// Все существующие хранилища, открытое последним — первым
+    static var vaults: [Vault] {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/obsidian/obsidian.json")
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let vaults = json["vaults"] as? [String: [String: Any]] else { return [] }
+        return vaults.values
+            .compactMap { v -> (Vault, Bool)? in
+                guard let path = v["path"] as? String, FileManager.default.fileExists(atPath: path) else { return nil }
+                return (Vault(name: (path as NSString).lastPathComponent, path: path), v["open"] as? Bool ?? false)
+            }
+            .sorted { $0.1 && !$1.1 }
+            .map(\.0)
+    }
+}
+
+// MARK: - Музыка
+
+/// «Сейчас играет» из любого плеера (Яндекс Музыка, Spotify, вкладка браузера).
+/// С macOS 15.4 сторонним приложениям трек не отдают, поэтому данные читает мост
+/// Bridge/nowplaying.m, запущенный системным perl.
+final class MediaController: ObservableObject {
+    enum Command: Int { case toggle = 2, next = 4, previous = 5 }
+
+    struct Track: Equatable {
+        var title: String
+        var artist: String?
+        var album: String?
+        var duration: Double?
+        var elapsed: Double?
+        var timestamp: Date?
+        var artwork: NSImage?
+        var appBundle: String?
+
+        /// Позиция с учётом времени, прошедшего с последнего ответа плеера
+        func position(at now: Date, playing: Bool) -> Double? {
+            guard let elapsed else { return nil }
+            guard playing, let timestamp else { return elapsed }
+            return min(elapsed + now.timeIntervalSince(timestamp), duration ?? .infinity)
+        }
+    }
+
+    @Published var track: Track?
+    @Published var isPlaying = false
+
+    /// Пока панель открыта, опрашиваем часто, иначе не тратим ресурсы
+    var active = false {
+        didSet { if active { refresh() } }
+    }
+
+    private var timer: Timer?
+    private let bridge = Bundle.main.url(forResource: "libloftienp", withExtension: "dylib")
+    private let script = Bundle.main.url(forResource: "nowplaying", withExtension: "pl")
+    private var running = false
+
+    init() {
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            guard let self, self.active else { return }
+            self.refresh()
+        }
+    }
+
+    func send(_ command: Command) {
+        if command == .toggle { isPlaying.toggle() }
+        run(command: command) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self?.refresh() }
+        }
+    }
+
+    func refresh() {
+        guard !running else { return }
+        running = true
+        run(command: nil) { [weak self] data in
+            guard let self else { return }
+            self.running = false
+            guard let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            self.isPlaying = (json["playing"] as? Bool) ?? ((json["playing"] as? Int) == 1)
+            guard let title = json["title"] as? String, !title.isEmpty else {
+                self.track = nil
+                return
+            }
+            var track = Track(title: title)
+            track.artist = json["artist"] as? String
+            track.album = json["album"] as? String
+            track.duration = json["duration"] as? Double
+            track.elapsed = json["elapsed"] as? Double
+            track.timestamp = (json["timestamp"] as? Double).map { Date(timeIntervalSince1970: $0) }
+            track.appBundle = json["bundle"] as? String
+            // Обложку декодируем только если трек сменился
+            if let old = self.track, old.title == title, old.artist == track.artist {
+                track.artwork = old.artwork
+            } else if let art = json["artwork"] as? String, let bytes = Data(base64Encoded: art) {
+                track.artwork = NSImage(data: bytes)
+            }
+            self.track = track
+        }
+    }
+
+    /// Запуск моста через /usr/bin/perl; результат — stdout
+    private func run(command: Command?, completion: @escaping (Data?) -> Void) {
+        guard let bridge, let script else { completion(nil); return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+            process.arguments = [script.path, bridge.path]
+            var env = ProcessInfo.processInfo.environment
+            if let command { env["LOFTIE_CMD"] = String(command.rawValue) }
+            process.environment = env
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                DispatchQueue.main.async { completion(data) }
+            } catch {
+                DispatchQueue.main.async { completion(nil) }
+            }
+        }
+    }
+
+    /// Имя и иконка приложения, которое играет
+    var source: (name: String, icon: NSImage)? {
+        guard let bundle = track?.appBundle,
+              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else { return nil }
+        let name = FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
+        return (name, NSWorkspace.shared.icon(forFile: url.path))
+    }
+}
+
+// MARK: - Напоминания
+
+/// План дня из системных Напоминаний: просроченное и на сегодня.
+final class RemindersStore: ObservableObject {
+    enum Access { case unknown, granted, denied }
+
+    @Published var access: Access
+    @Published var items: [EKReminder] = []
+
+    private let store = EKEventStore()
+
+    init() {
+        access = switch EKEventStore.authorizationStatus(for: .reminder) {
+        case .fullAccess: .granted
+        case .notDetermined: .unknown
+        default: .denied
+        }
+        NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: store, queue: .main) { [weak self] _ in
+            self?.refresh()
+        }
+    }
+
+    func requestAccess() {
+        NSApp.activate(ignoringOtherApps: true)
+        store.requestFullAccessToReminders { [weak self] granted, _ in
+            DispatchQueue.main.async {
+                self?.access = granted ? .granted : .denied
+                self?.refresh()
+            }
+        }
+    }
+
+    func refresh() {
+        guard access == .granted else { return }
+        let calendar = Calendar.current
+        let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date()))
+        let predicate = store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: end, calendars: nil)
+        store.fetchReminders(matching: predicate) { [weak self] reminders in
+            let sorted = (reminders ?? []).sorted {
+                ($0.dueDateComponents?.date ?? .distantFuture) < ($1.dueDateComponents?.date ?? .distantFuture)
+            }
+            DispatchQueue.main.async { self?.items = sorted }
+        }
+    }
+
+    func complete(_ reminder: EKReminder) {
+        reminder.isCompleted = true
+        try? store.save(reminder, commit: true)
+        items.removeAll { $0.calendarItemIdentifier == reminder.calendarItemIdentifier }
+    }
+
+    func add(_ title: String) {
+        let text = title.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty, let list = store.defaultCalendarForNewReminders() else { return }
+        let reminder = EKReminder(eventStore: store)
+        reminder.title = text
+        reminder.calendar = list
+        reminder.dueDateComponents = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        try? store.save(reminder, commit: true)
+        refresh()
+    }
+}
