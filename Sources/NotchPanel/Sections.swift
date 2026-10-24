@@ -91,7 +91,7 @@ struct StatusTile: View {
             // Тонкая шкала в цвете статуса
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.07))
+                    Capsule().fill(Palette.track)
                     if let fraction {
                         Capsule().fill(color.opacity(0.85)).frame(width: max(3, geo.size.width * min(max(fraction, 0), 1)))
                     }
@@ -145,7 +145,7 @@ struct TodayShelf: View {
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
         .frame(width: 220)
-        .background(Capsule().fill(Color.black.opacity(0.25)))
+        .background(Capsule().fill(Palette.field))
     }
 
     @ViewBuilder private var content: some View {
@@ -459,7 +459,7 @@ struct AddTile: View {
             .padding(.horizontal, 11)
             .frame(height: 58)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.white.opacity(hover ? 0.22 : 0.1), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                .strokeBorder(Palette.tertiary.opacity(hover ? 0.6 : 0.3), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -525,7 +525,7 @@ struct Field: View {
             .textFieldStyle(.plain)
             .font(.system(size: 12))
             .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.black.opacity(0.3)))
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Palette.field))
     }
 }
 
@@ -664,7 +664,7 @@ struct MusicPage: View {
                     Button { media.send(.toggle) } label: {
                         Image(systemName: media.isPlaying ? "pause.fill" : "play.fill")
                             .font(.system(size: 19))
-                            .foregroundStyle(Color(hex: 0x15121F))
+                            .foregroundStyle(Palette.onAccent)
                             .frame(width: 48, height: 48)
                             .background(Circle().fill(Palette.lilac))
                     }
@@ -702,7 +702,7 @@ struct MusicPage: View {
         return VStack(spacing: 4) {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.1))
+                    Capsule().fill(Palette.track)
                     Capsule().fill(Palette.lilac)
                         .frame(width: duration > 0 ? geo.size.width * min(position / duration, 1) : 0)
                 }
@@ -791,7 +791,7 @@ struct NotePage: View {
             }
             .padding(.horizontal, 12).padding(.vertical, 7)
             .frame(width: 380)
-            .background(Capsule().fill(Color.black.opacity(0.25)))
+            .background(Capsule().fill(Palette.field))
             destination
         }
     }
@@ -831,7 +831,7 @@ struct NotePage: View {
                     Text("Сохранить").font(.system(size: 12, weight: .semibold))
                         .padding(.horizontal, 14).padding(.vertical, 5)
                         .background(Capsule().fill(Palette.mint))
-                        .foregroundStyle(Color(hex: 0x0F1F1A))
+                        .foregroundStyle(Palette.onAccent)
                 }
                 .buttonStyle(.plain)
             }
@@ -912,7 +912,7 @@ struct NotePage: View {
         }
         .padding(8)
         .frame(width: 300)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(hex: 0x24262C)))
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Palette.popover))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 1))
         .shadow(color: .black.opacity(0.45), radius: 18, y: 10)
         .onHover { inside in

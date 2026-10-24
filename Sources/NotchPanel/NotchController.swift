@@ -1,5 +1,32 @@
 import AppKit
+import Combine
 import SwiftUI
+
+/// Тема оформления: как в системе, светлая или тёмная.
+enum Theme: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: "Авто"
+        case .light: "Светлая"
+        case .dark: "Тёмная"
+        }
+    }
+
+    var appearance: NSAppearance? {
+        switch self {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+
+    static var current: Theme {
+        Theme(rawValue: UserDefaults.standard.string(forKey: "theme") ?? "") ?? .system
+    }
+}
 
 /// Общее состояние панели: свёрнута или открыта, размеры челки.
 final class NotchModel: ObservableObject {
@@ -26,10 +53,15 @@ final class NotchModel: ObservableObject {
 
     @Published var expanded = false
     @Published var page: Page = .home {
-        didSet { settingsOpen = false }
+        didSet { settingsOpen = false; showAbout = false }
     }
+    /// «О Loftie» открыто прямо в панели вместо текущей вкладки
+    @Published var showAbout = false
     /// Открыто выпадающее меню шестерёнки
     @Published var settingsOpen = false
+    @Published var theme = Theme.current {
+        didSet { UserDefaults.standard.set(theme.rawValue, forKey: "theme") }
+    }
     /// Статусы по бокам от челки; без них пилюля шириной с саму челку
     @Published var showStatuses = UserDefaults.standard.object(forKey: "showStatuses") as? Bool ?? true {
         didSet { UserDefaults.standard.set(showStatuses, forKey: "showStatuses") }
@@ -65,7 +97,6 @@ final class NotchPanel: NSPanel {
         hidesOnDeactivate = false
         isFloatingPanel = true
         becomesKeyOnlyIfNeeded = true
-        appearance = NSAppearance(named: .darkAqua)
     }
 
     override var canBecomeKey: Bool { true }
@@ -93,6 +124,7 @@ final class NotchController: NSObject {
     private var notchCenterX: CGFloat = 0
     private var screenTop: CGFloat = 0
     private var menuOpen = false
+    private var themeWatch: AnyCancellable?
 
     private let spring = Animation.spring(response: 0.38, dampingFraction: 0.82)
 
@@ -112,6 +144,11 @@ final class NotchController: NSObject {
         host.sizingOptions = []
         panel.contentView = host
         panel.ignoresMouseEvents = true
+        // Тема применяется к панели и окнам сразу при переключении
+        themeWatch = model.$theme.sink { [weak self] theme in
+            self?.panel.appearance = theme.appearance
+            AppWindows.shared.apply(theme.appearance)
+        }
         layout()
         panel.orderFrontRegardless()
 
@@ -208,7 +245,8 @@ final class NotchController: NSObject {
             hoverWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: work)
         } else {
-            if expandedRect.insetBy(dx: -10, dy: -10).contains(point) || model.pinned || menuOpen {
+            // Пока открыто меню шестерёнки, оно само закрывается при уходе курсора, панель ждёт
+            if expandedRect.insetBy(dx: -10, dy: -10).contains(point) || model.pinned || menuOpen || model.settingsOpen {
                 leaveWork?.cancel(); leaveWork = nil
                 return
             }
@@ -216,7 +254,7 @@ final class NotchController: NSObject {
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 self.leaveWork = nil
-                if !self.model.pinned, !self.menuOpen, !self.expandedRect.insetBy(dx: -10, dy: -10).contains(NSEvent.mouseLocation) {
+                if !self.model.pinned, !self.menuOpen, !self.model.settingsOpen, !self.expandedRect.insetBy(dx: -10, dy: -10).contains(NSEvent.mouseLocation) {
                     self.collapse()
                 }
             }
@@ -245,9 +283,12 @@ final class NotchController: NSObject {
         let shots: [(Bool, NotchModel.Page, Bool, String)] = [
             (false, .home, false, "-collapsed"), (true, .home, false, ""), (true, .favorites, false, "-favorites"),
             (true, .music, false, "-music"), (true, .note, false, "-note"), (true, .home, true, "-settings"),
-            (true, .favorites, false, "-clipboard"), (true, .note, false, "-recording")]
+            (true, .favorites, false, "-clipboard"), (true, .note, false, "-recording"), (true, .home, false, "-about"),
+            (true, .home, false, "-light"), (true, .favorites, false, "-light-favorites"), (true, .music, false, "-light-music"),
+            (true, .note, false, "-light-note"), (true, .home, true, "-light-settings"), (true, .home, false, "-light-about")]
+        let savedTheme = model.theme
         func shoot(_ index: Int) {
-            guard index < shots.count else { done(); return }
+            guard index < shots.count else { model.theme = savedTheme; done(); return }
             let (expanded, page, settings, suffix) = shots[index]
             UserDefaults.standard.set(suffix == "-clipboard" ? "clipboard" : "link", forKey: "favoritesTab")
             if suffix == "-recording" {
@@ -259,6 +300,8 @@ final class NotchController: NSObject {
             model.expanded = expanded
             model.page = page
             model.settingsOpen = settings
+            model.showAbout = suffix.hasSuffix("-about")
+            model.theme = suffix.hasPrefix("-light") ? .light : .dark
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
                 if let view = self.panel.contentView,
                    let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
@@ -286,6 +329,7 @@ final class NotchController: NSObject {
         guard model.expanded else { return }
         model.pinned = false
         model.settingsOpen = false
+        model.showAbout = false
         media.active = false
         panel.makeFirstResponder(nil)
         panel.ignoresMouseEvents = true

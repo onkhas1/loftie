@@ -13,10 +13,6 @@ final class AppWindows {
                 .environmentObject(reminders).environmentObject(stats))
     }
 
-    func showAbout() {
-        show(id: "about", title: "О Loftie", view: AboutView())
-    }
-
     private func show<V: View>(id: String, title: String, view: V) {
         if let window = windows[id] {
             NSApp.activate(ignoringOtherApps: true)
@@ -24,7 +20,6 @@ final class AppWindows {
             return
         }
         let host = NSHostingController(rootView: view
-            .environment(\.colorScheme, .dark)
             .environment(\.locale, Locale(identifier: "ru_RU")))
         let window = NSWindow(contentViewController: host)
         window.title = title
@@ -32,13 +27,18 @@ final class AppWindows {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = NSColor(red: 0.09, green: 0.09, blue: 0.11, alpha: 1)
+        window.appearance = Theme.current.appearance
+        window.backgroundColor = .adaptive(dark: NSColor(hex: 0x16171B), light: NSColor(hex: 0xF4F4F7))
         window.isReleasedWhenClosed = false
         window.center()
         windows[id] = window
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Новая тема — и открытым окнам тоже
+    func apply(_ appearance: NSAppearance?) {
+        windows.values.forEach { $0.appearance = appearance }
     }
 
     private func close(_ id: String) {
@@ -113,7 +113,7 @@ struct WelcomeView: View {
                 Text("Начать").font(.system(size: 13, weight: .semibold))
                     .frame(maxWidth: .infinity).padding(.vertical, 9)
                     .background(Capsule().fill(Palette.blue))
-                    .foregroundStyle(Color(hex: 0x0E1526))
+                    .foregroundStyle(Palette.onAccent)
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 22)
@@ -174,84 +174,92 @@ private struct Permission: View {
     }
 }
 
-// MARK: - О приложении
+// MARK: - О приложении (внутри панели)
 
-struct AboutView: View {
+struct AboutPanel: View {
+    @EnvironmentObject var model: NotchModel
+
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
     }
 
     var body: some View {
-        VStack(spacing: 16) {
+        HStack(alignment: .center, spacing: 18) {
+            // Слева — что это
             VStack(spacing: 6) {
-                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 72, height: 72)
-                Text("Loftie").font(.system(size: 22, weight: .bold)).foregroundStyle(Palette.text)
-                Text("Версия \(version)").font(.system(size: 12)).foregroundStyle(Palette.tertiary)
-                Text("Панель в челке MacBook. Бесплатно и с открытым кодом.")
-                    .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 64, height: 64)
+                Text("Loftie").font(.system(size: 18, weight: .bold)).foregroundStyle(Palette.text)
+                Text("Версия \(version)").font(.system(size: 11)).foregroundStyle(Palette.tertiary)
+                Text("Всё нужное — прямо в челке")
+                    .font(.system(size: 11)).foregroundStyle(Palette.secondary)
+                    .multilineTextAlignment(.center)
             }
-            .padding(.top, 26)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Автор — \(Author.name)").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.tertiary)
-                    .padding(.horizontal, 8).padding(.bottom, 4)
-                LinkRow(icon: "paperplane.fill", color: Palette.blue, title: "Telegram", detail: "@onkhas", url: Author.telegram)
-                LinkRow(icon: "chevron.left.forwardslash.chevron.right", color: Palette.lilac,
-                        title: "GitHub", detail: "onkhas1/loftie", url: Author.github)
-                LinkRow(icon: "envelope.fill", color: Palette.mint, title: "Почта", detail: "byonkhas@gmail.com", url: Author.email)
-            }
-            .padding(8)
+            .frame(width: 190)
+            .frame(maxHeight: .infinity)
             .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Palette.card))
-            .padding(.horizontal, 22)
 
-            VStack(spacing: 10) {
+            // Справа — автор, контакты, кофе
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Автор — \(Author.name)").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.text)
+                HStack(spacing: 8) {
+                    ContactChip(icon: "paperplane.fill", color: Palette.blue, text: "@onkhas", url: Author.telegram)
+                    ContactChip(icon: "chevron.left.forwardslash.chevron.right", color: Palette.lilac, text: "GitHub", url: Author.github)
+                    ContactChip(icon: "envelope.fill", color: Palette.mint, text: "Почта", url: Author.email)
+                }
                 Text("Loftie полностью бесплатный — пользуйся на здоровье. Если зашёл и хочется сказать спасибо, можно угостить автора чашкой кофе. Это не обязательно.")
                     .font(.system(size: 12)).foregroundStyle(Palette.secondary)
-                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                Button {
-                    if let url = Author.donate { NSWorkspace.shared.open(url) }
-                } label: {
-                    Label(Author.donate == nil ? "Ссылка на кофе появится скоро" : "Угостить кофе",
-                          systemImage: "cup.and.saucer.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .frame(maxWidth: .infinity).padding(.vertical, 9)
-                        .background(Capsule().fill(Palette.pink.opacity(Author.donate == nil ? 0.12 : 1)))
-                        .foregroundStyle(Author.donate == nil ? Palette.pink : Color(hex: 0x2A0F18))
+                Spacer(minLength: 0)
+                HStack {
+                    Button {
+                        if let url = Author.donate { NSWorkspace.shared.open(url) }
+                    } label: {
+                        Label("Угостить кофе", systemImage: "cup.and.saucer.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 14).padding(.vertical, 6)
+                            .background(Capsule().fill(Palette.pink))
+                            .foregroundStyle(Palette.onAccent)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(Author.donate == nil)
+                    Spacer()
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) { model.showAbout = false }
+                    } label: {
+                        Text("Назад").font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.secondary)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-                .disabled(Author.donate == nil)
             }
-            .padding(.horizontal, 22)
-            .padding(.bottom, 22)
+            .padding(14)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Palette.card))
         }
-        .frame(width: 400)
-        .background(WindowBackground(accent: Palette.pink))
     }
 }
 
-private struct LinkRow: View {
+private struct ContactChip: View {
     let icon: String
     let color: Color
-    let title: String
-    let detail: String
+    let text: String
     let url: URL
     @State private var hover = false
 
     var body: some View {
-        Button { NSWorkspace.shared.open(url) } label: {
-            HStack(spacing: 10) {
-                IconRing(icon: icon, color: color, size: 26)
-                Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(Palette.text)
-                Spacer()
-                Text(detail).font(.system(size: 12)).foregroundStyle(Palette.secondary)
-                Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .bold)).foregroundStyle(Palette.tertiary)
-            }
-            .padding(.horizontal, 8).padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(hover ? Palette.cardHover : .clear))
-            .contentShape(Rectangle())
+        HStack(spacing: 6) {
+            Image(systemName: icon).font(.system(size: 10, weight: .semibold)).foregroundStyle(color)
+            Text(text).font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.text)
         }
-        .buttonStyle(.plain)
+        .fixedSize()
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .fill(hover ? color.opacity(0.2) : Palette.card)
+                .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(color.opacity(0.35), lineWidth: 1))
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { NSWorkspace.shared.open(url) }
         .onHover { hover = $0 }
+        .help(url.absoluteString.replacingOccurrences(of: "mailto:", with: ""))
     }
 }

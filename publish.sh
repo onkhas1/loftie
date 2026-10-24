@@ -19,7 +19,7 @@ ZIP="dist/Loftie-$VERSION.zip"
 SHA=$(shasum -a 256 "$ZIP" | awk '{print $1}')
 
 git add -A
-git commit -m "Loftie $VERSION" || true
+git commit -m "Loftie $VERSION" ${COMMIT_TRAILER:+-m "$COMMIT_TRAILER"} || true
 git tag "v$VERSION"
 git push origin main --tags
 
@@ -28,7 +28,7 @@ gh release create "v$VERSION" "$ZIP" --title "Loftie $VERSION" --notes "${NOTES:
 # Рецепт Homebrew: новая версия и контрольная сумма архива
 sed -i '' -E "s/^  version \".*\"/  version \"$VERSION\"/; s/^  sha256 \".*\"/  sha256 \"$SHA\"/" "$TAP/Casks/loftie.rb"
 git -C "$TAP" add Casks/loftie.rb
-git -C "$TAP" commit -m "loftie $VERSION"
+git -C "$TAP" commit -m "loftie $VERSION" ${COMMIT_TRAILER:+-m "$COMMIT_TRAILER"}
 git -C "$TAP" push origin main
 
 echo "✓ Loftie $VERSION опубликован. brew upgrade loftie подтянет новую версию."

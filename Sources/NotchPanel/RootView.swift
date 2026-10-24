@@ -6,24 +6,51 @@ extension Color {
     }
 }
 
-/// Графит и пастельные цвета разделов. Цвет живёт в свете лампы, кольцах и тонких шкалах, а не в заливках.
+extension NSColor {
+    convenience init(hex: UInt32, alpha: CGFloat = 1) {
+        self.init(srgbRed: CGFloat((hex >> 16) & 0xff) / 255, green: CGFloat((hex >> 8) & 0xff) / 255,
+                  blue: CGFloat(hex & 0xff) / 255, alpha: alpha)
+    }
+
+    /// Цвет, который сам выбирает вариант под тёмную или светлую тему
+    static func adaptive(dark: NSColor, light: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        }
+    }
+}
+
+private func adaptive(_ dark: NSColor, _ light: NSColor) -> Color {
+    Color(nsColor: .adaptive(dark: dark, light: light))
+}
+
+/// «Графит и свет»: в тёмной теме графит и пастель, в светлой — молочный фон и насыщенные
+/// цвета разделов, чтобы читались на белом. Цвет живёт в свете, кольцах и тонких линиях.
 enum Palette {
-    static let groundTop = Color(hex: 0x1C1D22)
-    static let groundBottom = Color(hex: 0x111216)
+    static let groundTop = adaptive(NSColor(hex: 0x1C1D22), NSColor(hex: 0xFAFAFC))
+    static let groundBottom = adaptive(NSColor(hex: 0x111216), NSColor(hex: 0xEDEEF2))
 
-    static let text = Color(hex: 0xF2F3F5)
-    static let secondary = Color.white.opacity(0.6)
-    static let tertiary = Color.white.opacity(0.38)
-    static let card = Color.white.opacity(0.05)
-    static let cardHover = Color.white.opacity(0.09)
-    static let hairline = Color.white.opacity(0.07)
+    static let text = adaptive(NSColor(hex: 0xF2F3F5), NSColor(hex: 0x17181C))
+    static let secondary = adaptive(NSColor(white: 1, alpha: 0.6), NSColor(white: 0, alpha: 0.58))
+    static let tertiary = adaptive(NSColor(white: 1, alpha: 0.38), NSColor(white: 0, alpha: 0.4))
+    static let card = adaptive(NSColor(white: 1, alpha: 0.05), NSColor(white: 0, alpha: 0.045))
+    static let cardHover = adaptive(NSColor(white: 1, alpha: 0.09), NSColor(white: 0, alpha: 0.08))
+    static let hairline = adaptive(NSColor(white: 1, alpha: 0.07), NSColor(white: 0, alpha: 0.09))
+    /// Поля ввода
+    static let field = adaptive(NSColor(white: 0, alpha: 0.25), NSColor(white: 0, alpha: 0.055))
+    /// Дорожки шкал и прогресса
+    static let track = adaptive(NSColor(white: 1, alpha: 0.08), NSColor(white: 0, alpha: 0.08))
+    /// Выпадающие меню
+    static let popover = adaptive(NSColor(hex: 0x24262C), NSColor(hex: 0xFFFFFF))
+    /// Текст на залитых цветом кнопках
+    static let onAccent = adaptive(NSColor(hex: 0x15121F), NSColor(hex: 0xFFFFFF))
 
-    static let blue = Color(hex: 0x7AA7FF)
-    static let pink = Color(hex: 0xFF8FB1)
-    static let lilac = Color(hex: 0xB69CFF)
-    static let mint = Color(hex: 0x5FD4B0)
-    static let cyan = Color(hex: 0x67D1E6)
-    static let coral = Color(hex: 0xFF7A7A)
+    static let blue = adaptive(NSColor(hex: 0x7AA7FF), NSColor(hex: 0x3B78F5))
+    static let pink = adaptive(NSColor(hex: 0xFF8FB1), NSColor(hex: 0xE2457A))
+    static let lilac = adaptive(NSColor(hex: 0xB69CFF), NSColor(hex: 0x8660EC))
+    static let mint = adaptive(NSColor(hex: 0x5FD4B0), NSColor(hex: 0x14A07B))
+    static let cyan = adaptive(NSColor(hex: 0x67D1E6), NSColor(hex: 0x1597BF))
+    static let coral = adaptive(NSColor(hex: 0xFF7A7A), NSColor(hex: 0xE0483F))
 }
 
 /// Режим отладочного рендера.
@@ -70,6 +97,7 @@ struct RootView: View {
         let index = Double(pages.firstIndex(of: model.page) ?? 0)
         // Лампа: цветной свет над открытой вкладкой
         let lampX = 0.5 + (index - Double(pages.count - 1) / 2) * 0.13
+        let lamp = model.showAbout ? Palette.pink : model.page.accent
 
         VStack(spacing: model.gap) {
             UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12, style: .continuous)
@@ -79,7 +107,7 @@ struct RootView: View {
 
             ZStack(alignment: .top) {
                 LinearGradient(colors: [Palette.groundTop, Palette.groundBottom], startPoint: .top, endPoint: .bottom)
-                EllipticalGradient(colors: [model.page.accent.opacity(0.3), model.page.accent.opacity(0.08), .clear],
+                EllipticalGradient(colors: [lamp.opacity(0.3), lamp.opacity(0.08), .clear],
                                    center: UnitPoint(x: lampX, y: 0), startRadiusFraction: 0, endRadiusFraction: 0.6)
                 ExpandedView()
             }
@@ -98,7 +126,6 @@ struct RootView: View {
             .opacity(expanded ? 1 : 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .environment(\.colorScheme, .dark)
         .environment(\.locale, Locale(identifier: "ru_RU"))
     }
 }
@@ -138,7 +165,7 @@ struct WingItem: View {
     var body: some View {
         HStack(spacing: 3) {
             Image(systemName: icon).font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(Palette.secondary)
+                .foregroundStyle(.white.opacity(0.6))
             Text(text).font(.system(size: 11, weight: .medium, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(.white.opacity(0.9))
@@ -162,7 +189,7 @@ struct ExpandedView: View {
                 }
                 HStack(spacing: 12) {
                     HStack(spacing: 6) {
-                        Circle().fill(model.page.accent).frame(width: 7, height: 7)
+                        Circle().fill(model.showAbout ? Palette.pink : model.page.accent).frame(width: 7, height: 7)
                         Text("Loftie").font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.text)
                     }
                     Spacer()
@@ -175,11 +202,15 @@ struct ExpandedView: View {
             .frame(height: 30)
 
             Group {
-                switch model.page {
-                case .home: HomePage()
-                case .favorites: FavoritesPage()
-                case .music: MusicPage()
-                case .note: NotePage()
+                if model.showAbout {
+                    AboutPanel()
+                } else {
+                    switch model.page {
+                    case .home: HomePage()
+                    case .favorites: FavoritesPage()
+                    case .music: MusicPage()
+                    case .note: NotePage()
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -199,9 +230,12 @@ struct PageTab: View {
     @State private var hover = false
 
     var body: some View {
-        let selected = model.page == page
+        let selected = model.page == page && !model.showAbout
         Button {
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) { model.page = page }
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+                model.showAbout = false
+                model.page = page
+            }
         } label: {
             Text(page.title)
                 .font(.system(size: 13, weight: selected ? .semibold : .medium))
@@ -254,7 +288,7 @@ struct SettingsDropdown: View {
             Text("Скрыто из строки меню")
                 .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.tertiary)
                 .padding(.horizontal, 8).padding(.bottom, 2)
-            ForEach(menuBar.apps) { app in
+            ForEach(menuBar.apps.prefix(5)) { app in
                 DropdownRow(action: { close(); menuBar.open(app) }) {
                     Image(nsImage: app.icon).resizable().frame(width: 18, height: 18)
                     Text(app.name)
@@ -264,7 +298,31 @@ struct SettingsDropdown: View {
                 Image(systemName: "eye.slash").frame(width: 18)
                 Text("Скрыть или вернуть значки…")
             }
-            Divider().overlay(Palette.hairline).padding(.vertical, 4)
+            Divider().overlay(Palette.hairline).padding(.vertical, 3)
+            HStack {
+                Text("Тема")
+                Spacer()
+                HStack(spacing: 2) {
+                    ForEach(Theme.allCases) { theme in
+                        Button {
+                            withAnimation(.easeOut(duration: 0.2)) { model.theme = theme }
+                        } label: {
+                            Text(theme.title)
+                                .font(.system(size: 11, weight: model.theme == theme ? .semibold : .medium))
+                                .padding(.horizontal, 8).padding(.vertical, 3)
+                                .background(Capsule().fill(model.theme == theme ? Palette.cardHover : .clear))
+                                .foregroundStyle(model.theme == theme ? Palette.text : Palette.secondary)
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(2)
+                .background(Capsule().fill(Palette.card))
+            }
+            .font(.system(size: 13))
+            .foregroundStyle(Palette.text)
+            .padding(.horizontal, 8).padding(.vertical, 3)
             HStack {
                 Text("Статусы в челке")
                 Spacer()
@@ -272,7 +330,7 @@ struct SettingsDropdown: View {
             }
             .font(.system(size: 13))
             .foregroundStyle(Palette.text)
-            .padding(.horizontal, 8).padding(.vertical, 5)
+            .padding(.horizontal, 8).padding(.vertical, 3)
             HStack {
                 Text("Запускать при входе")
                 Spacer()
@@ -280,8 +338,11 @@ struct SettingsDropdown: View {
             }
             .font(.system(size: 13))
             .foregroundStyle(Palette.text)
-            .padding(.horizontal, 8).padding(.vertical, 5)
-            DropdownRow(action: { close(); AppWindows.shared.showAbout() }) {
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            DropdownRow(action: {
+                close()
+                withAnimation(.easeOut(duration: 0.2)) { model.showAbout = true }
+            }) {
                 Image(systemName: "info.circle").frame(width: 18)
                 Text("О Loftie")
             }
@@ -291,8 +352,8 @@ struct SettingsDropdown: View {
             }
         }
         .padding(8)
-        .frame(width: 250)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(hex: 0x24262C)))
+        .frame(width: 280)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Palette.popover))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 1))
         .shadow(color: .black.opacity(0.45), radius: 18, y: 10)
         .onHover { inside in
@@ -324,7 +385,7 @@ struct DropdownRow<Label: View>: View {
                 .font(.system(size: 13))
                 .foregroundStyle(Palette.text)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 8).padding(.vertical, 5)
+                .padding(.horizontal, 8).padding(.vertical, 4)
                 .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(hover ? Palette.cardHover : .clear))
                 .contentShape(Rectangle())
         }
