@@ -69,6 +69,9 @@ final class NotchModel: ObservableObject {
     @Published var notchSize = CGSize(width: 185, height: 32)
     /// Пока true, панель не сворачивается от ухода курсора (идёт ввод текста, открыта форма).
     var pinned = false
+    /// Открыто системное окно выбора файла. Оно живёт в отдельном процессе macOS,
+    /// поэтому клики в нём выглядят как клики мимо панели — их нельзя считать уходом.
+    var pickingFile = false
 
     let expandedSize = CGSize(width: 680, height: 256)
     /// Зазор между челкой и открытой панелью
@@ -161,7 +164,7 @@ final class NotchController: NSObject {
         } as Any)
         // Клик мимо панели закрывает её, даже если идёт ввод
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            guard let self, self.model.expanded, !self.menuOpen,
+            guard let self, self.model.expanded, !self.menuOpen, !self.model.pickingFile,
                   !self.expandedRect.contains(NSEvent.mouseLocation) else { return }
             self.collapse()
         } as Any)
@@ -246,7 +249,7 @@ final class NotchController: NSObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: work)
         } else {
             // Пока открыто меню шестерёнки, оно само закрывается при уходе курсора, панель ждёт
-            if expandedRect.insetBy(dx: -10, dy: -10).contains(point) || model.pinned || menuOpen || model.settingsOpen {
+            if expandedRect.insetBy(dx: -10, dy: -10).contains(point) || model.pinned || menuOpen || model.settingsOpen || model.pickingFile {
                 leaveWork?.cancel(); leaveWork = nil
                 return
             }
@@ -254,7 +257,7 @@ final class NotchController: NSObject {
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 self.leaveWork = nil
-                if !self.model.pinned, !self.menuOpen, !self.model.settingsOpen, !self.expandedRect.insetBy(dx: -10, dy: -10).contains(NSEvent.mouseLocation) {
+                if !self.model.pinned, !self.menuOpen, !self.model.settingsOpen, !self.model.pickingFile, !self.expandedRect.insetBy(dx: -10, dy: -10).contains(NSEvent.mouseLocation) {
                     self.collapse()
                 }
             }
@@ -285,12 +288,18 @@ final class NotchController: NSObject {
             (true, .music, false, "-music"), (true, .note, false, "-note"), (true, .home, true, "-settings"),
             (true, .favorites, false, "-clipboard"), (true, .note, false, "-recording"), (true, .home, false, "-about"),
             (true, .home, false, "-light"), (true, .favorites, false, "-light-favorites"), (true, .music, false, "-light-music"),
-            (true, .note, false, "-light-note"), (true, .home, true, "-light-settings"), (true, .home, false, "-light-about")]
+            (true, .note, false, "-light-note"), (true, .home, true, "-light-settings"), (true, .home, false, "-light-about"),
+            (true, .favorites, false, "-accounts"), (true, .favorites, false, "-form-link"), (true, .favorites, false, "-form-account"),
+            (true, .favorites, false, "-light-form-link")]
         let savedTheme = model.theme
         func shoot(_ index: Int) {
             guard index < shots.count else { model.theme = savedTheme; done(); return }
             let (expanded, page, settings, suffix) = shots[index]
-            UserDefaults.standard.set(suffix == "-clipboard" ? "clipboard" : "link", forKey: "favoritesTab")
+            UserDefaults.standard.set(suffix == "-clipboard" ? "clipboard" : suffix == "-accounts" ? "account" : "link",
+                                      forKey: "favoritesTab")
+            Snapshot.form = suffix.hasSuffix("form-link") ? .link : suffix.hasSuffix("form-account") ? .account : nil
+            // Сначала уводим со страницы, чтобы форма открылась заново
+            model.page = .home
             if suffix == "-recording" {
                 // Показ состояния записи без микрофона
                 voice.transcript = "Купить билеты на субботу и не забыть зарядку"
@@ -298,10 +307,11 @@ final class NotchController: NSObject {
                 voice.state = .recording
             }
             model.expanded = expanded
-            model.page = page
-            model.settingsOpen = settings
-            model.showAbout = suffix.hasSuffix("-about")
             model.theme = suffix.hasPrefix("-light") ? .light : .dark
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            self.model.page = page
+            self.model.settingsOpen = settings
+            self.model.showAbout = suffix.hasSuffix("-about")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
                 if let view = self.panel.contentView,
                    let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
@@ -320,6 +330,7 @@ final class NotchController: NSObject {
                     }
                 }
                 shoot(index + 1)
+            }
             }
         }
         shoot(0)

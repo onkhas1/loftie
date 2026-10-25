@@ -93,6 +93,33 @@ final class FavoritesStore: ObservableObject {
         save()
     }
 
+    /// Сохраняет закладку. У ссылки без названия сначала стоит домен, потом подтягивается заголовок страницы;
+    /// у аккаунта без сервиса названием становится сам логин.
+    func save(_ favorite: Favorite) {
+        var item = favorite
+        item.title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.value = item.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let needsTitle = item.kind == .link && item.title.isEmpty
+        if item.title.isEmpty { item.title = item.kind == .link ? Self.host(of: item.value) : item.value }
+        upsert(item)
+        guard needsTitle, let url = Self.url(from: item.value) else { return }
+        let placeholder = item.title
+        PageTitle.fetch(url) { [weak self] title in
+            guard let self, let title,
+                  var current = self.items.first(where: { $0.id == item.id }), current.title == placeholder else { return }
+            current.title = title
+            self.upsert(current)
+        }
+    }
+
+    static func url(from text: String) -> URL? {
+        URL(string: text.contains("://") ? text : "https://" + text)
+    }
+
+    static func host(of text: String) -> String {
+        url(from: text)?.host?.replacingOccurrences(of: "www.", with: "") ?? text
+    }
+
     func remove(_ favorite: Favorite) {
         items.removeAll { $0.id == favorite.id }
         save()
@@ -105,8 +132,7 @@ final class FavoritesStore: ObservableObject {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(favorite.value, forType: .string)
         case .link:
-            let text = favorite.value.contains("://") ? favorite.value : "https://" + favorite.value
-            if let link = URL(string: text) { NSWorkspace.shared.open(link) }
+            if let link = Self.url(from: favorite.value) { NSWorkspace.shared.open(link) }
         case .file:
             NSWorkspace.shared.open(URL(fileURLWithPath: favorite.expandedPath))
         case .clipboard:
@@ -126,6 +152,64 @@ final class FavoritesStore: ObservableObject {
             Favorite(kind: .file, title: "Загрузки", value: home + "/Downloads"),
             Favorite(kind: .file, title: "Программы", value: "/Applications"),
         ]
+    }
+}
+
+// MARK: - Заголовок страницы
+
+/// Достаёт название страницы по ссылке: og:title, иначе <title>.
+enum PageTitle {
+    static func fetch(_ url: URL, completion: @escaping (String?) -> Void) {
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+                         forHTTPHeaderField: "User-Agent")
+        request.setValue("ru,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            let title = data.flatMap { parse($0.prefix(400_000)) }
+            DispatchQueue.main.async { completion(title) }
+        }.resume()
+    }
+
+    static func parse(_ data: Data) -> String? {
+        guard let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .windowsCP1251) else { return nil }
+        let patterns = [
+            #"<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["']"#,
+            #"<meta[^>]+content=["']([^"']+)["'][^>]*property=["']og:title["']"#,
+            #"<title[^>]*>([\s\S]*?)</title>"#,
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                  let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+                  let range = Range(match.range(at: 1), in: html) else { continue }
+            let title = decode(String(html[range]))
+                .components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
+            if !title.isEmpty, !isStub(title) { return String(title.prefix(80)) }
+        }
+        return nil
+    }
+
+    /// Заглушки защитных и служебных страниц — с ними лучше оставить домен
+    private static func isStub(_ title: String) -> Bool {
+        let lower = title.lowercased()
+        return ["just a moment", "attention required", "access denied", "403 forbidden", "404 not found",
+                "are you a robot", "вы не робот", "один момент", "redirecting"].contains { lower.contains($0) }
+    }
+
+    /// Самые частые HTML-сущности в заголовках
+    private static func decode(_ text: String) -> String {
+        var result = text
+        for (entity, char) in [("&amp;", "&"), ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"), ("&lt;", "<"),
+                               ("&gt;", ">"), ("&nbsp;", " "), ("&mdash;", "—"), ("&ndash;", "–"), ("&laquo;", "«"), ("&raquo;", "»")] {
+            result = result.replacingOccurrences(of: entity, with: char)
+        }
+        if let regex = try? NSRegularExpression(pattern: "&#(\\d+);") {
+            for match in regex.matches(in: result, range: NSRange(result.startIndex..., in: result)).reversed() {
+                guard let whole = Range(match.range, in: result), let digits = Range(match.range(at: 1), in: result),
+                      let code = UInt32(result[digits]), let scalar = Unicode.Scalar(code) else { continue }
+                result.replaceSubrange(whole, with: String(Character(scalar)))
+            }
+        }
+        return result
     }
 }
 

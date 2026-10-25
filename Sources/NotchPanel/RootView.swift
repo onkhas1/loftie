@@ -56,6 +56,8 @@ enum Palette {
 /// Режим отладочного рендера.
 enum Snapshot {
     static var isOn = false
+    /// Форма добавления, которую показать на снимке
+    static var form: FavKind?
 }
 
 extension NotchModel.Page {

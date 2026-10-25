@@ -258,6 +258,7 @@ extension FavKind {
 }
 
 struct FavoritesPage: View {
+    @EnvironmentObject var model: NotchModel
     @EnvironmentObject var favorites: FavoritesStore
     @EnvironmentObject var clipboard: ClipboardHistory
     @AppStorage("favoritesTab") private var tab: FavKind = .link
@@ -285,13 +286,14 @@ struct FavoritesPage: View {
             if tab == .clipboard {
                 ClipboardList(onCopy: flashCopied)
             } else if let editing = draft {
-                Shelf {
-                    FavoriteForm(draft: editing, onSave: { saved in
-                        favorites.upsert(saved); draft = nil
-                    }, onCancel: { draft = nil })
-                }
+                FavoriteForm(draft: editing, isNew: !favorites.items.contains { $0.id == editing.id }, onSave: { saved in
+                    withAnimation { favorites.save(saved) }
+                    draft = nil
+                }, onCancel: { draft = nil })
             } else if favorites.items(of: tab).isEmpty {
-                EmptyFavorites(kind: tab) { draft = Favorite(kind: tab, title: "", value: "") }
+                EmptyFavorites(kind: tab) { add() }
+            } else if tab == .account {
+                AccountsList(onCopy: { item in tap(item) }, onEdit: { draft = $0 }, onAdd: { add() })
             } else {
                 PageScroll {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2), spacing: 8) {
@@ -299,11 +301,25 @@ struct FavoritesPage: View {
                             FavoriteTile(item: item, onTap: { tap(item) }, onEdit: { draft = item },
                                          onDelete: { favorites.remove(item) })
                         }
-                        AddTile(color: tab.color) { draft = Favorite(kind: tab, title: "", value: "") }
+                        AddTile(color: tab.color) { add() }
                     }
                 }
             }
         }
+        .onAppear {
+            // Отладочный снимок формы
+            if let kind = Snapshot.form { tab = kind; draft = Favorite(kind: kind, title: "", value: "") }
+        }
+    }
+
+    /// Файлы и программы добавляются сразу из окна выбора, остальное — через форму
+    private func add() {
+        guard tab == .file else {
+            draft = Favorite(kind: tab, title: "", value: "")
+            return
+        }
+        guard let url = FilePicker.choose(model) else { return }
+        withAnimation { favorites.upsert(Favorite(kind: .file, title: FilePicker.title(for: url), value: url.path)) }
     }
 
     private func tap(_ item: Favorite) {
@@ -315,6 +331,71 @@ struct FavoritesPage: View {
     private func flashCopied() {
         withAnimation { copied = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { withAnimation { copied = false } }
+    }
+}
+
+/// Аккаунты списком: сервис слева, логин справа, клик копирует логин.
+struct AccountsList: View {
+    @EnvironmentObject var favorites: FavoritesStore
+    let onCopy: (Favorite) -> Void
+    let onEdit: (Favorite) -> Void
+    let onAdd: () -> Void
+
+    var body: some View {
+        PageScroll {
+            VStack(spacing: 6) {
+                ForEach(favorites.items(of: .account)) { item in
+                    AccountRow(item: item, onTap: { onCopy(item) })
+                        .contextMenu {
+                            Button("Изменить") { onEdit(item) }
+                            Button("Удалить", role: .destructive) { favorites.remove(item) }
+                        }
+                }
+                Button(action: onAdd) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "plus").font(.system(size: 11, weight: .bold)).foregroundStyle(Palette.lilac)
+                        Text("Добавить аккаунт").font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 38)
+                    .background(RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(Palette.tertiary.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+struct AccountRow: View {
+    let item: Favorite
+    let onTap: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 12) {
+                Text(item.title)
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.text)
+                    .lineLimit(1)
+                    .frame(width: 150, alignment: .leading)
+                Text(item.value)
+                    .font(.system(size: 13)).foregroundStyle(Palette.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 8)
+                Image(systemName: "doc.on.doc").font(.system(size: 11))
+                    .foregroundStyle(hover ? Palette.lilac : Palette.tertiary)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 38)
+            .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(hover ? Palette.cardHover : Palette.card))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help("Скопировать «\(item.value)»")
     }
 }
 
@@ -467,65 +548,156 @@ struct AddTile: View {
     }
 }
 
+/// Форма закладки: компактная карточка по центру. Enter сохраняет, Esc отменяет.
 struct FavoriteForm: View {
     @EnvironmentObject var model: NotchModel
     @State var draft: Favorite
+    let isNew: Bool
     let onSave: (Favorite) -> Void
     let onCancel: () -> Void
 
+    private enum Slot { case value, title }
+    @FocusState private var focus: Slot?
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Field(prompt: "Название", text: $draft.title)
-            if draft.kind == .file {
-                HStack {
-                    Text(draft.value.isEmpty ? "Файл или программа не выбраны" : draft.value)
-                        .font(.system(size: 11)).foregroundStyle(Palette.secondary)
-                        .lineLimit(1).truncationMode(.middle)
-                    Spacer()
-                    Button("Выбрать…", action: pick).controlSize(.small)
-                }
-            } else {
-                Field(prompt: draft.kind.valuePrompt, text: $draft.value)
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 11) {
+                IconRing(icon: draft.kind.badgeIcon, color: draft.kind.color, size: 28)
+                Text(heading).font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.text)
             }
-            Spacer(minLength: 0)
-            HStack {
+
+            VStack(spacing: 8) {
+                switch draft.kind {
+                case .link:
+                    IconField(icon: "link", prompt: "Ссылка", text: $draft.value)
+                        .focused($focus, equals: .value)
+                    IconField(icon: "textformat", prompt: "Название", text: $draft.title)
+                        .focused($focus, equals: .title)
+                case .account:
+                    IconField(icon: "at", prompt: "Логин, почта или никнейм", text: $draft.value)
+                        .focused($focus, equals: .value)
+                    IconField(icon: "globe", prompt: "Сервис", text: $draft.title)
+                        .focused($focus, equals: .title)
+                case .file, .clipboard:
+                    HStack(spacing: 10) {
+                        Image(nsImage: NSWorkspace.shared.icon(forFile: draft.expandedPath)).resizable().frame(width: 22, height: 22)
+                        Text(draft.value.isEmpty ? "Ничего не выбрано" : (draft.value as NSString).abbreviatingWithTildeInPath)
+                            .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Button("Другой…", action: pick).controlSize(.small)
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Palette.field))
+                    IconField(icon: "textformat", prompt: "Название", text: $draft.title)
+                        .focused($focus, equals: .title)
+                }
+            }
+            .onSubmit(submit)
+
+            HStack(spacing: 14) {
                 Spacer()
-                Button("Отмена", action: onCancel).controlSize(.small)
-                Button("Сохранить") { onSave(draft) }
-                    .controlSize(.small)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(draft.title.trimmingCharacters(in: .whitespaces).isEmpty || draft.value.isEmpty)
+                Button("Отмена", action: onCancel)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Palette.secondary)
+                    .keyboardShortcut(.cancelAction)
+                Button(action: submit) {
+                    Text(isNew ? "Добавить" : "Сохранить").font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 16).padding(.vertical, 6)
+                        .background(Capsule().fill(draft.kind.color.opacity(canSave ? 1 : 0.35)))
+                        .foregroundStyle(Palette.onAccent)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSave)
             }
         }
+        .padding(14)
+        .frame(width: 420)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Palette.card))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Пока форма открыта, панель не сворачивается от ухода курсора
-        .onAppear { model.pinned = true }
+        .onAppear {
+            model.pinned = true
+            // Панель не активирует приложение сама: делаем её ключевой, чтобы курсор сразу встал в поле
+            NSApp.windows.first { $0 is NotchPanel }?.makeKey()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                focus = draft.kind == .file ? .title : .value
+            }
+        }
         .onDisappear { model.pinned = false }
     }
 
+    private var heading: String {
+        switch draft.kind {
+        case .link: isNew ? "Новая ссылка" : "Ссылка"
+        case .account: isNew ? "Новый аккаунт" : "Аккаунт"
+        case .file, .clipboard: "Файл или программа"
+        }
+    }
+
+    private var canSave: Bool {
+        !draft.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func submit() {
+        guard canSave else { return }
+        onSave(draft)
+    }
+
     private func pick() {
+        guard let url = FilePicker.choose(model) else { return }
+        draft.value = url.path
+        draft.title = FilePicker.title(for: url)
+    }
+}
+
+/// Поле ввода с иконкой слева
+struct IconField: View {
+    let icon: String
+    let prompt: String
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon).font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Palette.tertiary)
+                .frame(width: 16)
+            // Своя подсказка: системная в поле без фокуса рисуется цветом текста
+            ZStack(alignment: .leading) {
+                if text.isEmpty {
+                    Text(prompt).font(.system(size: 13)).foregroundStyle(Palette.tertiary)
+                        .lineLimit(1).allowsHitTesting(false)
+                }
+                TextField("", text: $text)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Palette.text)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Palette.field))
+    }
+}
+
+/// Системное окно выбора файла или программы; панель на это время не сворачивается.
+enum FilePicker {
+    static func choose(_ model: NotchModel) -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.prompt = "Добавить"
+        model.pickingFile = true
+        defer { model.pickingFile = false }
         NSApp.activate(ignoringOtherApps: true)
-        if panel.runModal() == .OK, let url = panel.url {
-            draft.value = url.path
-            if draft.title.isEmpty { draft.title = url.deletingPathExtension().lastPathComponent }
-        }
+        return panel.runModal() == .OK ? panel.url : nil
     }
-}
 
-struct Field: View {
-    let prompt: String
-    @Binding var text: String
-
-    var body: some View {
-        TextField(prompt, text: $text)
-            .textFieldStyle(.plain)
-            .font(.system(size: 12))
-            .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Palette.field))
+    /// «Telegram» для Telegram.app, имя папки или файла как в Finder
+    static func title(for url: URL) -> String {
+        FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
     }
 }
 
